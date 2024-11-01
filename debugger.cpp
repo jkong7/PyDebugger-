@@ -5,14 +5,11 @@
 //Implements the Debugger class, including the constructor, destructor, and the run function
 
 //Functionality:
-// - Responsible for managing the execution of a nuPython program. Includes:
-//   - Setting, removing, and clearing breakpoints
-//   - Running the program either until completion or until a breakpoint is hit
-//   - Providing commands to list breakpoints, show memory, and print variables
-//   - Managing the program state (Loaded, Running, Completed) and navigating the program graph
+// -Breakpoints: Setting, removing, and clearing (remove all) breakpoints
+// -Run: Running the program either until completion or until a breakpoint is hit
+// -Step: Stepping through statements one line at a time 
+// -Extra: Provides commands to show commands, list breakpoints, show memory, print variables, show next execution line, and show program state 
 
-//Log for self: 
-//Time spent: 32 hours (Saturday-Sunday)
 
 #include <iostream>
 
@@ -20,21 +17,26 @@
 
 using namespace std;
 
-Debugger::Debugger(struct STMT* program) //Constructor: init state to "Loaded" and the currentStmt and head nodes to program (first node) and memory as ram_init, map and set empty on init
-  : state("Loaded"), currentStmt(program), head(program), memory(ram_init()) 
-{
+Debugger::Debugger(struct STMT* program) 
+  : state("Loaded"), head(program), currentStmt(program), memory(ram_init()), second_time_breakpoint(false) //initialize data members 
+{   
+    //Responsible for: init next to next node of head, filling up the lines set with programgraph lines, and breaking connection between head and next node
+    next = getNextNode(head); 
+
+    while (head!=nullptr) {
+        lines.insert(head->line); 
+        head = next; 
+        next = getNextNode(next);
+    } //fill up lines set
+
+    head = currentStmt; //reset head
+    next = getNextNode(head); //reset next (next node of head)
+    breakGraph(head); 
 }
 
 Debugger::~Debugger() //Called automatically when debugger object goes out of scope (end of main() function)
 {
-    //clearAllBreakpoints();  //Call helper function to get all programgraph connections back to original so that programgraph_destory can clear all ndoes
-
-    // programgraph_destroy(head);  // Frees the program graph memory (do NOT call again in main.cpp)
-
-    ram_destroy(memory);  //Frees the RAM memory
-
-    //Note, I "clear breakpoints" right after execute so I don't need to repair programgraph here, also programgraph_destroy called in main, NO need
-    //to do so here, thus only need to call ram_destroy 
+    ram_destroy(memory);  //Frees the RAM memory (programgraph cleared in main.cpp)
 }
 
 void Debugger::run()
@@ -44,12 +46,14 @@ void Debugger::run()
   string cmd;  
   while (true) {
     //List out all of the commands to the user 
-    cout << "Enter a command, type h for help. Type r to run. > "; 
+    cout << endl; 
+    cout << "Enter a command, type h for help. Type r to run. > " <<endl; 
     cin >> cmd; 
 
     if (cmd=="h") {
       cout << "Available commands:"<<endl;
       cout << "r -> Run the program / continue from a breakpoint"<<endl; 
+      cout << "s -> Step to next stmt by executing current stmt" <<endl; 
       cout << "b n -> Breakpoint at line n"<<endl; 
       cout << "rb n -> Remove breakpoint at line n"<< endl; 
       cout << "lb -> List all breakpoints" << endl; 
@@ -63,9 +67,7 @@ void Debugger::run()
 
     else if (cmd=="q") {
       //return -> breaks out of the entire user input loop 
-      if (breakpoints.size()>0) {
-        clearAllBreakpoints(); 
-      }
+      repairGraph(currentStmt, next); 
       break; 
     }
 
@@ -112,159 +114,72 @@ void Debugger::run()
     }
 
     else if (cmd == "r") {
-        //Did most of the work already in setting breakpoints. Here, we are dealing with execute as well as the results of execute
-        //We need a reference to a CURRENT statement as that's execute parameter (starting point). Let execute run until completion 
-        //(stops automatically when it has no next_stmt to process, which represnts a breakpoint hence why prev -> current connections were severed)
-        //After execute runs, we have access to the last statement that was ran. Using MapNodes that was also filled by setting breakpoints, we 
-        //can move current statement to the value of MapNodes[last statement]. 
-
-        //State is completed: no need to go further
-        if (state == "Completed") {
-            cout << "program has completed" << endl;
-            continue;
-        }
-
-        //Otherwise, perform execute
-        state = "Running"; 
-        ExecuteResult result = execute(currentStmt, memory); 
-
-        if (result.Success==false) {
-            state="Completed"; 
-            clearAllBreakpoints(); //SUPER SNEAKY edge case, in program can "completed" in this case where a semantic error is caused, causing the breakpoint
-                                   //repair in the next if case to NOT run -> causes memory leak, thus in this if loop, repair immediately using clearAllBreakpoints
+        //Run command: perform step operation UNTIL currentStmt is either null or a breakpoint is reached
+        if (state=="Completed") {
+            cout << "program has completed" <<endl; 
             continue; 
         }
-
-        //Get last executed statement , 1. succesfully completed execution, 2. stopped execution early due to program error, 3. stopped at breakpoint
-        STMT* lastStmt = result.LastStmt; 
-
-
-        //If lastStmt found in map, we've hit a breakpoint, move currenStmt to next using map 
-        if (MapNodes.find(lastStmt)!=MapNodes.end()) { 
-            //cout << "Hit a breakpoint at line #" <<MapNodes.find(lastStmt)->second->line <<endl; 
-            auto iterator = MapNodes.find(lastStmt); 
-            currentStmt = iterator -> second; 
-            bool f = false; 
-            removeBreakpointAuto(iterator->second->line); 
-        } else {
+        int start = currentStmt->line; 
+        step(); //Always begin with a step (moves currentStmt to the next of last, lets below loop run)
+        while (currentStmt!=nullptr && breakpoints.find(currentStmt->line)==breakpoints.end()) {
+            step(); 
+            if (state=="Completed") {
+                break; 
+            }
+        }
+        //Note: If we were stopped by a breakpoint, we have to still perform step on that breakpoint line (this is the "first time breakpoint reached" case)
+        //This will print out that a breakpoint was hit on {line} and then change the second_time_breakpoint to true so that the next execution actually
+        //runs that breakpoint line
+        if (currentStmt==nullptr) {
             state="Completed"; 
             continue; 
-        } //Otherwise, we're done 
+        }
+        if (breakpoints.find(currentStmt->line)!=breakpoints.end() && (currentStmt->line!=start)) {
+            step(); //Perform one more step to load state into second time hitting breakpoint 
+        }
     } 
+
+    else if (cmd=="s") {
+        //Step command: call helper function step() defined below
+        if (state=="Completed") {
+            cout << "program has completed" <<endl; 
+        }
+        step(); 
+    }
         
     else if (cmd=="b") {
-        //Keep a prev and current pointer, we want to iterate until we 
-        //find the line number n (current) and then SEVER the connection 
-        //between prev and current, to keep track of these broken connections
-        //so that we can restore it and move on to the next breakpoint after 
-        //an execute, store these connections in a map
-        // stmt : stmt
-
-        //In all, two main operations: 
-        //1. Sever node connection 
-        //2. Store that connection in map 
-
         int n; 
         cin >> n; 
-
-        //Case where breakpoint is already set 
+        //Case: line isn't found in the programgraph (utilize lines set)
+        if (lines.find(n)==lines.end()) {
+            cout << "no such line" <<endl; 
+            continue; 
+        }
+        //Case: breakpoint already exists
         if (breakpoints.find(n)!=breakpoints.end()) {
             cout << "breakpoint already set" <<endl; 
             continue; 
         }
 
-        //Two STMT* references: prev and current 
-        STMT* current = head; 
-        STMT* prev = nullptr; 
-        
-
-        //First search for line n 
-        while (current != nullptr) {
-            
-
-            if (current->line == n) {
-                break;  //Found target line number n, break out of the loop
-            }
-            prev = current;  //prev always follows one behind current
-
-            if (current->stmt_type == STMT_ASSIGNMENT) {
-                if (current->types.assignment->next_stmt == nullptr) {
-                    // Check if the current statement is in MapNodes
-                    if (MapNodes.find(current) == MapNodes.end()) {
-                        //This means the connection was severed and there's no mapping to follow, no such line case 
-                        break;  
-                    } else {
-                        //Restore the severed connection from MapNodes
-                        current = MapNodes[current];
-                    }
-                } else {
-                    //Continue traversing normally if next_stmt is not nullptr
-                    current = current->types.assignment->next_stmt;
-                }
-            }
-            else if (current->stmt_type == STMT_FUNCTION_CALL) {
-                if (current->types.function_call->next_stmt == nullptr) {
-                    if (MapNodes.find(current) == MapNodes.end()) {
-                        break;
-                    } else {
-                        current = MapNodes[current];
-                    }
-                } else {
-                    current = current->types.function_call->next_stmt;
-                }
-            }
-            else if (current->stmt_type == STMT_PASS) {
-                if (current->types.pass->next_stmt == nullptr) {
-                    if (MapNodes.find(current) == MapNodes.end()) {
-                        break;
-                    } else {
-                        current = MapNodes[current];
-                    }
-                } else {
-                    current = current->types.pass->next_stmt;
-                }
-            }
-        }
-
-        //After the loop, check if we actually found the target line
-        if (current == nullptr || current->line != n) {
-            //If current is nullptr or we didn't find the correct line number, exit the command
-            cout << "No such line" << endl;
-            continue;
-        }
-
-        //Proceed with setting the breakpoint: Sever prev -> current and fill in MapNodes
-        if (prev != nullptr) {
-            if (prev->stmt_type == STMT_ASSIGNMENT) {
-                MapNodes[prev] = prev->types.assignment->next_stmt;
-                prev->types.assignment->next_stmt = nullptr;  
-            } else if (prev->stmt_type == STMT_FUNCTION_CALL) {
-                MapNodes[prev] = prev->types.function_call->next_stmt;
-                prev->types.function_call->next_stmt = nullptr;
-            } else if (prev->stmt_type == STMT_PASS) {
-                MapNodes[prev] = prev->types.pass->next_stmt;
-                prev->types.pass->next_stmt = nullptr;
-            }
+        //Breakpoint management revolves around inserting and deleting from breakpoints set
+        breakpoints.insert(n); 
+        cout << "breakpoint set" << endl;
+    } 
     
-
-            breakpoints.insert(n); //Insert n into breakpoint line numbers set 
-            //cout << "Breakpoint set at line #" << n << endl;
-        } 
-    }
-
     else if (cmd == "rb") {
         int n;
         cin >> n;
-        //Only print "breakpoint removed" if the removal was successful
-        bool flag = false; 
-        removeBreakpoint(n, flag); 
-        if (flag) {
+        //Removing means to just remove from the breakpoint set
+        if (breakpoints.find(n)!=breakpoints.end()) {
+            breakpoints.erase(n); 
             cout << "breakpoint removed" << endl; 
-        } 
+        } else {
+            cout << "no such breakpoint" << endl; 
+        } //Case: no such breakpoint
     }
     else if (cmd == "cb") {
-        //Call clearAllBreakpoints(), I put it in a helper as the destructor also needs to clear all breakpoints 
-        clearAllBreakpoints(); 
+        // Clear the breakpoints set 
+        breakpoints.clear(); 
         cout << "breakpoints cleared" << endl;
     }
 
@@ -276,10 +191,7 @@ void Debugger::run()
             //loop through breakpoints (using iterator which is also native to sets) and print line numbers 
             cout << "breakpoints on lines: "; 
             for (auto iterator = breakpoints.begin(); iterator != breakpoints.end(); ++iterator) { //++ operator for iterator to move one to right
-                if (iterator != breakpoints.begin()) {
-                    cout << ", ";
-                }
-                cout << *iterator; 
+                cout << *iterator << " "; 
             }
             cout << endl; 
         }
@@ -290,116 +202,97 @@ void Debugger::run()
             cout << "completed execution" << endl;
         } 
         else if (state == "Loaded") {
-            cout << "line 1" << endl;
+            cout << "line "<<head->line << endl;
+            programgraph_print(head); //This will always be the head line (head always ref first node, unchanged)
         } 
         //The line that's going to run next is the line that's at our currentStmt right now 
         else if (state == "Running") {
             cout << "line " << currentStmt->line << endl;
+            programgraph_print(currentStmt); 
         }
+    }
+    else { //Case: unknown user command 
+        cout << "unknown command" <<endl; 
     }
   }
 }
 
-void Debugger::clearAllBreakpoints() {
-    //To clear all breakpoints, we relink everything that is severed which is represented by MapNodes pairs 
-    if (MapNodes.size()>0) { 
-        //Iterate over all the entries in MapNodes
-        for (const auto& entry : MapNodes) {
-            STMT* stmt = entry.first;  // The statement before the breakpoint
-            STMT* nextStmt = entry.second;  // The statement at the breakpoint
 
+void Debugger::step() {
+    if (state=="Loaded") {
+        state="Running"; 
+    } //state management 
 
-            // Restore the severed connection 
-            if (stmt->stmt_type == STMT_ASSIGNMENT) {
-                stmt->types.assignment->next_stmt = nextStmt;
-            } else if (stmt->stmt_type == STMT_FUNCTION_CALL) {
-                stmt->types.function_call->next_stmt = nextStmt;
-            } else if (stmt->stmt_type == STMT_PASS) {
-                stmt->types.pass->next_stmt = nextStmt;
-            }
+    if (breakpoints.find(currentStmt->line)!=breakpoints.end()) { //CURRENT STATEMENT IS A BREAKPOINT
+        if (!second_time_breakpoint) { //FIRST TIME HITTING BREAKPOINT
+            cout << "hit breakpoint at line " << currentStmt->line << endl; 
+            programgraph_print(currentStmt); 
+            second_time_breakpoint = true; //flip the breakpoint status flag
+        } else { //SECOND TIME HITTING BREAKPOINT, EXECUTE ONE LINE
+            second_time_breakpoint = false; //flip the breakpoint status flag
+            executeOneLine(); 
         }
-
-        // Clear the breakpoints set and MapNodes
-        breakpoints.clear();
-        MapNodes.clear(); 
+    } else { //NOT A BREAKPOINT, EXECUTE ONE LINE
+        executeOneLine(); 
     }
 }
 
-void Debugger::removeBreakpoint(int n, bool &flag) {
-    STMT* targetStmt = nullptr;  // Line n statement
-    STMT* next = nullptr;
+void Debugger::executeOneLine() {
+    ExecuteResult result = execute(currentStmt, memory); 
+    //currentStmt and next is severed right now, so execute will only execute currentStmt as desired
 
-    
-    // Check if the breakpoint exists
-    if (breakpoints.find(n) == breakpoints.end()) {
-        cout << "no such breakpoint" << endl;
-        flag=false; 
-        return; 
+    //Handle consequences: repairGraph and then move current to next and next to its next and then break graph from that state (each prepares next step command)
+    if (result.Success==false) {
+        state="Completed"; 
+        repairGraph(currentStmt, next); 
+    } 
+    repairGraph(currentStmt, next); 
+    currentStmt = next; 
+    next = getNextNode(next); 
+    if (currentStmt == nullptr) {
+        state="Completed"; 
+    } else {
+        breakGraph(currentStmt); 
     }
-
-    // Remove from the breakpoints set
-    breakpoints.erase(n);
-    flag=true; 
-
-    // Locate the target statement and its next statement in MapNodes
-    for (const auto& entry : MapNodes) {
-        next = entry.second;
-        if (next != nullptr && next->line == n) {
-            targetStmt = entry.first;
-            break;
-        }
-    }
-
-    // Restore the connection based on the statement type
-    if (targetStmt != nullptr) {  // Ensure targetStmt is valid
-        if (targetStmt->stmt_type == STMT_ASSIGNMENT) {
-            targetStmt->types.assignment->next_stmt = next;
-        } else if (targetStmt->stmt_type == STMT_FUNCTION_CALL) {
-            targetStmt->types.function_call->next_stmt = next;
-        } else if (targetStmt->stmt_type == STMT_PASS) {
-            targetStmt->types.pass->next_stmt = next;
-        }
-    }
-
-    // Remove the mapping pair from MapNodes
-    MapNodes.erase(targetStmt);
 }
 
-void Debugger::removeBreakpointAuto(int n) {
-    STMT* targetStmt = nullptr;  // Line n statement
-    STMT* next = nullptr;
 
-    
-    // Check if the breakpoint exists
-    if (breakpoints.find(n) == breakpoints.end()) {
-        cout << "no such breakpoint" << endl;
-        return; 
-    }
-
-    // Remove from the breakpoints set
-    breakpoints.erase(n);
-
-    // Locate the target statement and its next statement in MapNodes
-    for (const auto& entry : MapNodes) {
-        next = entry.second;
-        if (next != nullptr && next->line == n) {
-            targetStmt = entry.first;
-            break;
+void Debugger::breakGraph(STMT* node) {
+    if (node!=nullptr) {
+        if (node->stmt_type == STMT_ASSIGNMENT) {
+            node->types.assignment->next_stmt = nullptr; 
+        } else if (node->stmt_type == STMT_FUNCTION_CALL) {
+            node->types.function_call->next_stmt = nullptr; 
+        } else if (node->stmt_type == STMT_PASS) {
+            node->types.pass->next_stmt = nullptr; 
         }
-    }
-
-    // Restore the connection based on the statement type
-    if (targetStmt != nullptr) {  // Ensure targetStmt is valid
-        if (targetStmt->stmt_type == STMT_ASSIGNMENT) {
-            targetStmt->types.assignment->next_stmt = next;
-        } else if (targetStmt->stmt_type == STMT_FUNCTION_CALL) {
-            targetStmt->types.function_call->next_stmt = next;
-        } else if (targetStmt->stmt_type == STMT_PASS) {
-            targetStmt->types.pass->next_stmt = next;
-        }
-    }
-
-    // Remove the mapping pair from MapNodes
-    MapNodes.erase(targetStmt);
+    } //Helper function: break graph at node -> node's next
 }
+
+void Debugger::repairGraph(STMT* node, STMT* next) {
+    if (node != nullptr) {  // Ensure targetStmt is valid
+        if (node->stmt_type == STMT_ASSIGNMENT) {
+            node->types.assignment->next_stmt = next;
+        } else if (node->stmt_type == STMT_FUNCTION_CALL) {
+            node->types.function_call->next_stmt = next;
+        } else if (node->stmt_type == STMT_PASS) {
+            node->types.pass->next_stmt = next;
+        }
+    } //Helper function: set node's next to input next node
+}
+
+STMT* Debugger::getNextNode(STMT* node) {
+    STMT* next = nullptr; 
+    if (node != nullptr) {  // Ensure targetStmt is valid
+        if (node->stmt_type == STMT_ASSIGNMENT) {
+            next = node->types.assignment->next_stmt; 
+        } else if (node->stmt_type == STMT_FUNCTION_CALL) {
+            next= node->types.function_call->next_stmt; 
+        } else if (node->stmt_type == STMT_PASS) {
+            next= node->types.pass->next_stmt; 
+        }
+    } 
+    return next; //Helper function: get input node's next node (may be nullptr!)
+}
+
 

@@ -1,22 +1,24 @@
-## test03.py ##
-pass
+## test03-v2.py ##
+print('starting')
 
 x = 456
-y = 0.123456789
-z = 123.005
+z = x * 10
+z = z * 5
 mytrue = True
-myfalse = z < 100.00
-a_string_var = "yet another string"
+mytrue = 0
+mytrue = mytrue - 1
 apple = 9102 ** 2
 
 pass
 
-print()
+print(x)
 x = 43.56
-print()
+print("x is now")
+print(x)
+print(z)
 y = 87
 z = "overwriting with a string"
 apple = 1.23498
-a_string_var = x == apple
+z = z + " and more string"
 
-pass
+print('done')
